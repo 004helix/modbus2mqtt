@@ -19,7 +19,7 @@ except NameError:  # python3
     xrange = range
 
 # modbus tcp server
-MODBUS_HOST = 'mdusd'
+MODBUS_HOST = 'mbusd'
 MODBUS_PORT = 502
 
 # mqtt broker
