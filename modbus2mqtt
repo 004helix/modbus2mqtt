@@ -4,10 +4,7 @@
 from __future__ import print_function
 from paho.mqtt.client import Client as MqttClient
 from pyModbusTCP.client import ModbusClient
-import ctypes
-import ctypes.util
 import threading
-import struct
 import time
 import os
 
@@ -26,28 +23,9 @@ MODBUS_PORT = 502
 MQTT_HOST = 'mosquitto'
 MQTT_PORT = 1883
 
-# libc library for sysinfo
-libc = ctypes.CDLL('libc.so.6')
-
-
-def uptime():
-    if hasattr(time, 'perf_counter'):
-        return time.perf_counter()
-
-    if hasattr(time, 'monotonic'):
-        return time.monotonic()
-
-    buf = ctypes.create_string_buffer(4096)
-
-    if libc.sysinfo(buf) != 0:
-        return -1
-
-    return struct.unpack_from('@l', buf.raw)[0]
-
 
 def mqtt_received(mqtt, userdata, message):
     modbus, lock, n = userdata
-
     topic = message.topic.split('/')
 
     if len(topic) != 4 or topic[0] != 'modbus2mqtt':
@@ -86,7 +64,6 @@ def main(n):
 
     # n coils
     coils = [None] * n
-    cache = uptime() + 60
 
     while True:
         time.sleep(0.25)
@@ -97,34 +74,23 @@ def main(n):
 
             data = modbus.read_coils(0, n)
 
-        if not data:
-            continue
-
-        if data == coils:
-            if cache > uptime():
-                continue
-
-            for i in xrange(n):
-                state = b'1' if coils[i] else b'0'
-                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state)
-
-            cache = uptime() + 60
+        if not data or data == coils:
             continue
 
         for i in xrange(n):
             if coils[i] is None:
                 state = b'1' if data[i] else b'0'
-                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state)
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state, retain=True)
                 coils[i] = data[i]
                 continue
 
             if coils[i] and not data[i]:
-                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'0')
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'0', retain=True)
                 coils[i] = False
                 continue
 
             if not coils[i] and data[i]:
-                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'1')
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'1', retain=True)
                 coils[i] = True
                 continue
 
