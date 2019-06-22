@@ -1,0 +1,145 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
+from paho.mqtt.client import Client as MqttClient
+from pyModbusTCP.client import ModbusClient
+import ctypes
+import ctypes.util
+import threading
+import struct
+import time
+import os
+
+
+# define xrange
+try:
+    xrange
+except NameError:  # python3
+    xrange = range
+
+# modbus tcp server
+MODBUS_HOST = 'mdusd'
+MODBUS_PORT = 502
+
+# mqtt broker
+MQTT_HOST = 'mosquitto'
+MQTT_PORT = 1883
+
+# libc library for sysinfo
+libc = ctypes.CDLL('libc.so.6')
+
+
+def uptime():
+    if hasattr(time, 'perf_counter'):
+        return time.perf_counter()
+
+    if hasattr(time, 'monotonic'):
+        return time.monotonic()
+
+    buf = ctypes.create_string_buffer(4096)
+
+    if libc.sysinfo(buf) != 0:
+        return -1
+
+    return struct.unpack_from('@l', buf.raw)[0]
+
+
+def mqtt_received(mqtt, userdata, message):
+    modbus, lock, n = userdata
+
+    topic = message.topic.split('/')
+
+    if len(topic) != 4 or topic[0] != 'modbus2mqtt':
+        return
+
+    if topic[1] == 'coil' and topic[2].isdigit() and \
+       topic[3] == 'set' and message.payload in (b'0', b'1'):
+        coil = int(topic[2])
+
+        if coil < 0 or coil >= n:
+            return
+
+        with lock:
+            if not modbus.is_open():
+                modbus.open()
+
+            modbus.write_single_coil(coil, bool(int(message.payload)))
+
+
+def main(n):
+    # create lock
+    lock = threading.Lock()
+
+    # create modbus client
+    modbus = ModbusClient()
+    modbus.host(MODBUS_HOST)
+    modbus.port(MODBUS_PORT)
+
+    # create mqtt client
+    mqtt = MqttClient('modbus2mqtt')
+    mqtt.on_message = mqtt_received
+    mqtt.user_data_set((modbus, lock, n))
+    mqtt.connect(MQTT_HOST, port=MQTT_PORT)
+    mqtt.loop_start()
+    mqtt.subscribe('modbus2mqtt/coil/+/set')
+
+    # n coils
+    coils = [None] * n
+    cache = uptime() + 60
+
+    while True:
+        time.sleep(0.25)
+
+        with lock:
+            if not modbus.is_open():
+                modbus.open()
+
+            data = modbus.read_coils(0, n)
+
+        if not data:
+            continue
+
+        if data == coils:
+            if cache > uptime():
+                continue
+
+            for i in xrange(n):
+                state = b'1' if coils[i] else b'0'
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state)
+
+            cache = uptime() + 60
+            continue
+
+        for i in xrange(n):
+            if coils[i] is None:
+                state = b'1' if data[i] else b'0'
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state)
+                coils[i] = data[i]
+                continue
+
+            if coils[i] and not data[i]:
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'0')
+                coils[i] = False
+                continue
+
+            if not coils[i] and data[i]:
+                mqtt.publish('modbus2mqtt/coil/%d' % (i, ), b'1')
+                coils[i] = True
+                continue
+
+
+if __name__ == '__main__':
+    if os.getenv('MQTT_HOST') is not None:
+        MQTT_HOST = os.getenv('MQTT_HOST')
+
+    if os.getenv('MQTT_PORT') is not None:
+        MQTT_PORT = int(os.getenv('MQTT_PORT'))
+
+    if os.getenv('MODBUS_HOST') is not None:
+        MODBUS_HOST = os.getenv('MODBUS_HOST')
+
+    if os.getenv('MODBUS_PORT') is not None:
+        MODBUS_PORT = int(os.getenv('MODBUS_PORT'))
+
+    main(16)  # process 16 coils
