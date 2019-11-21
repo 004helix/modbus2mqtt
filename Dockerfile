@@ -1,8 +1,7 @@
 FROM alpine:latest
 LABEL maintainer "Raman Shyshniou <rommer@ibuffed.com>"
 
-COPY . /opt
-WORKDIR /opt
-RUN apk --no-cache add tini python py-paho-mqtt py-pip && pip install pyModbusTCP
+RUN apk --no-cache add python3 py3-paho-mqtt py3-pip && pip3 install pyModbusTCP
+COPY modbus2mqtt /usr/bin/modbus2mqtt
 
-ENTRYPOINT ["/sbin/tini", "--", "/opt/modbus2mqtt"]
+ENTRYPOINT ["/usr/bin/modbus2mqtt"]

@@ -1,19 +1,14 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-from __future__ import print_function
 from paho.mqtt.client import Client as MqttClient
 from pyModbusTCP.client import ModbusClient
 import threading
+import signal
 import time
+import sys
 import os
 
-
-# define xrange
-try:
-    xrange
-except NameError:  # python3
-    xrange = range
 
 # modbus tcp server
 MODBUS_HOST = 'mbusd'
@@ -24,15 +19,24 @@ MQTT_HOST = 'mosquitto'
 MQTT_PORT = 1883
 
 
+def terminate(signum, frame):
+    sys.exit(0)
+
+
+def mqtt_connected(mqtt, userdata, flags, rc):
+    if rc == 0:
+        mqtt.subscribe('modbus2mqtt/coil/+/set')
+
+
 def mqtt_received(mqtt, userdata, message):
     modbus, lock, n = userdata
     topic = message.topic.split('/')
+    payload = message.payload
 
     if len(topic) != 4 or topic[0] != 'modbus2mqtt':
         return
 
-    if topic[1] == 'coil' and topic[2].isdigit() and \
-       topic[3] == 'set' and message.payload in (b'0', b'1'):
+    if topic[1] == 'coil' and topic[2].isdigit() and topic[3] == 'set' and payload in (b'0', b'1'):
         coil = int(topic[2])
 
         if coil < 0 or coil >= n:
@@ -42,7 +46,7 @@ def mqtt_received(mqtt, userdata, message):
             if not modbus.is_open():
                 modbus.open()
 
-            modbus.write_single_coil(coil, bool(int(message.payload)))
+            modbus.write_single_coil(coil, bool(int(payload)))
 
 
 def main(n):
@@ -57,10 +61,10 @@ def main(n):
     # create mqtt client
     mqtt = MqttClient('modbus2mqtt')
     mqtt.on_message = mqtt_received
+    mqtt.on_connect = mqtt_connected
     mqtt.user_data_set((modbus, lock, n))
-    mqtt.connect(MQTT_HOST, port=MQTT_PORT)
+    mqtt.connect_async(MQTT_HOST, port=MQTT_PORT)
     mqtt.loop_start()
-    mqtt.subscribe('modbus2mqtt/coil/+/set')
 
     # n coils
     coils = [None] * n
@@ -77,7 +81,7 @@ def main(n):
         if not data or data == coils:
             continue
 
-        for i in xrange(n):
+        for i in range(n):
             if coils[i] is None:
                 state = b'1' if data[i] else b'0'
                 mqtt.publish('modbus2mqtt/coil/%d' % (i, ), state, retain=True)
@@ -107,5 +111,10 @@ if __name__ == '__main__':
 
     if os.getenv('MODBUS_PORT') is not None:
         MODBUS_PORT = int(os.getenv('MODBUS_PORT'))
+
+    if os.getpid() == 1:
+        signal.signal(signal.SIGINT, terminate)
+        signal.signal(signal.SIGTERM, terminate)
+        signal.signal(signal.SIGQUIT, terminate)
 
     main(16)  # process 16 coils
